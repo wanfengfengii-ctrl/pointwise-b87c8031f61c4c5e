@@ -5,6 +5,7 @@ import sqlite3
 from press.duplex import DuplexStage, RunConflict, next_stage, validate_stage_result
 from press.ejection import eject_sheet, read_actual_ejections
 from press.queue import get_sheet_work, read_queued_run, reserve_next_action, settle_action
+from press.retirement import read_retired
 from press.simulator import DeviceAction, SimulatedPress
 
 
@@ -36,6 +37,7 @@ def _actual(device, run_id):
 
 
 def advance_run(db: sqlite3.Connection, device: SimulatedPress, run_id: str, request_id: str) -> dict:
+    resume_committed = None
     with db:
         db.execute('BEGIN IMMEDIATE')
         run = read_queued_run(db, device.press_id, run_id)
@@ -54,30 +56,44 @@ def advance_run(db: sqlite3.Connection, device: SimulatedPress, run_id: str, req
                 return json.loads(response)
             work = get_sheet_work(db, run_id, number)
             stage = DuplexStage(target)
-            if work.pending_request != request_id:
-                raise RunConflict('action_not_reserved')
-            validate_stage_result(work.stage, stage)
+            if work.pending_request == request_id:
+                validate_stage_result(work.stage, stage)
+            else:
+                # The reservation may have been cleared because the sheet was
+                # retired after the device committed this very action.  The old
+                # request still belongs to that original sheet; recover the
+                # committed device result instead of reserving a new sheet.
+                resume_committed = device.committed_result(action_id)
+                if (resume_committed is None or resume_committed.stage != stage
+                        or resume_committed.action_id != action_id):
+                    raise RunConflict('action_not_reserved')
 
-    sheet = run.plan.sheets[work.number - run.plan.start]
-    placement = None
-    if stage == DuplexStage.FRONT:
-        placement = asdict(sheet.front)
-    elif stage == DuplexStage.BACK:
-        placement = asdict(sheet.back)
-    action = DeviceAction(action_id, run.batch_id, run_id, request_id, work.number, stage, placement)
-    if stage == DuplexStage.EJECTED:
-        result = eject_sheet(device, action, work.stage)
+    if resume_committed is not None:
+        result = resume_committed
+        reserved = False
     else:
-        result = device.execute(action)
-    if result.action_id != action_id or result.stage != stage:
-        raise RunConflict('device_result_conflict')
+        sheet = run.plan.sheets[work.number - run.plan.start]
+        placement = None
+        if stage == DuplexStage.FRONT:
+            placement = asdict(sheet.front)
+        elif stage == DuplexStage.BACK:
+            placement = asdict(sheet.back)
+        action = DeviceAction(action_id, run.batch_id, run_id, request_id, work.number, stage, placement)
+        if stage == DuplexStage.EJECTED:
+            result = eject_sheet(device, action, work.stage)
+        else:
+            result = device.execute(action)
+        if result.action_id != action_id or result.stage != stage:
+            raise RunConflict('device_result_conflict')
+        reserved = True
 
     with db:
         db.execute('BEGIN IMMEDIATE')
         saved = _read_request(db, request_id)[4]
         if saved is not None:
             return json.loads(saved)
-        settle_action(db, run_id, work.number, request_id, result.stage)
+        if reserved:
+            settle_action(db, run_id, work.number, request_id, result.stage)
         receipt = AdvanceReceipt(request_id, run_id, work.number, result.stage,
                                  action_id, result.ejection_id, _actual(device, run_id))
         response = asdict(receipt)
@@ -88,4 +104,8 @@ def advance_run(db: sqlite3.Connection, device: SimulatedPress, run_id: str, req
 
 def read_run_result(db: sqlite3.Connection, device: SimulatedPress, run_id: str) -> dict:
     run = read_queued_run(db, device.press_id, run_id)
-    return {**run.reference(), 'actual': _actual(device, run_id)}
+    result = {**run.reference(), 'actual': _actual(device, run_id)}
+    retired = read_retired(db, run_id)
+    if retired:
+        result['retired'] = retired
+    return result

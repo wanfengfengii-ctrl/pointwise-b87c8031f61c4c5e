@@ -10,6 +10,7 @@ from editions.paper import require_fields
 from layout.plan import plan_from_record
 from press.duplex import RunConflict
 from press.queue import enqueue_plan, init_queue
+from press.retirement import init_retirement, retire_sheet
 from press.runs import advance_run, init_runs, read_run_result
 from press.simulator import DevicePaused, SimulatedPress
 
@@ -99,6 +100,11 @@ class PressRequestHandler(JsonRequestHandler):
                     require_fields(body, 'request_id')
                     request_id = require_identifier(body['request_id'], 'invalid_request_id')
                     result = advance_run(db, device, path[1], request_id)
+                elif len(path) == 3 and path[0] == 'runs' and path[2] == 'retire':
+                    require_fields(body, 'request_id', 'ejection_id')
+                    request_id = require_identifier(body['request_id'], 'invalid_request_id')
+                    ejection_id = require_identifier(body['ejection_id'], 'invalid_ejection_id')
+                    result = retire_sheet(db, device, path[1], request_id, ejection_id)
                 else:
                     raise KeyError('unknown_route')
         except RunConflict as exc:
@@ -122,6 +128,7 @@ def initialize_press(db_path, device: SimulatedPress):
             raise ValueError('press_identity_mismatch')
         init_queue(db)
         init_runs(db)
+        init_retirement(db)
     device.initialize_device()
 
 

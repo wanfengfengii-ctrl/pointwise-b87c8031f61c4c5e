@@ -14,6 +14,7 @@ from desk.dispatch import dispatch_batch
 from desk.press_client import HttpPressClient, PressClient, PressResponseError, PressTransportError
 from desk.progress import read_progress
 from desk.receipts import init_dispatch_receipts
+from desk.scrap import scrap_batch
 from editions.drafts import parse_draft
 from editions.paper import require_fields
 from editions.proofs import ProofTemplate
@@ -57,7 +58,7 @@ class DeskRequestHandler(JsonRequestHandler):
         if len(path) == 3 and path[0] == 'batches':
             batch_id, action = path[1:]
             if action == 'progress':
-                return 200, asdict(read_progress(db, self.server.client, batch_id))
+                return 200, read_progress(db, self.server.client, batch_id).to_record()
             if action == 'delivery':
                 return 200, asdict(pickup_batch(db, self.server.client, batch_id))
         raise KeyError('unknown_route')
@@ -91,6 +92,12 @@ class DeskRequestHandler(JsonRequestHandler):
             if action == 'inspection':
                 require_fields(body, 'measurements')
                 return 200, asdict(inspect_batch(db, self.server.client, batch_id, body['measurements']))
+            if action == 'scrap':
+                require_fields(body, 'request_id', 'ejection_id', 'deviation_mm')
+                request_id = require_identifier(body['request_id'], 'invalid_request_id')
+                ejection_id = require_identifier(body['ejection_id'], 'invalid_ejection_id')
+                return 200, scrap_batch(db, self.server.client, batch_id, request_id,
+                                        ejection_id, body['deviation_mm'])
         raise KeyError('unknown_route')
 
 

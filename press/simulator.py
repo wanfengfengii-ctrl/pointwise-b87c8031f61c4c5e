@@ -121,6 +121,16 @@ class SimulatedPress:
             self.after_effect(action, result)
         return result
 
+    def committed_result(self, action_id: str) -> DeviceResult | None:
+        """Read back a device result without accepting or creating an action."""
+        with closing(sqlite3.connect(self.db_path)) as db:
+            row = db.execute('SELECT result FROM device_actions WHERE action_id = ?',
+                             (action_id,)).fetchone()
+        if row is None or row[0] is None:
+            return None
+        data = json.loads(row[0])
+        return DeviceResult(data['action_id'], DuplexStage(data['stage']), data['ejection_id'])
+
     def ejection_events(self, run_id: str | None = None) -> list[dict]:
         sql = 'SELECT seq, action_id, batch_id, run_id, number FROM device_ejections'
         with closing(sqlite3.connect(self.db_path)) as db:

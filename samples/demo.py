@@ -34,15 +34,56 @@ def main():
         deviations = sample['deviations_mm']
         measurements = [{'ejection_id': event['ejection_id'], 'deviation_mm': deviations[str(event['number'])]}
                         for event in reversed(actual)]
-        issued = request_json(desk, prefix + '/inspection', {'measurements': measurements})
+
+        # The first 041 on the fresh press is A-P1.  With 3 mm it is out of the
+        # frozen 2 mm tolerance, so the quality inspector returns it.
+        returned = request_json(desk, prefix + '/scrap',
+                                {'request_id': 'scrap-041', 'ejection_id': 'A-P1', 'deviation_mm': 3})
+        assert (returned['number'], returned['ejection_id']) == (41, 'A-P1')
+        after_return = request_json(desk, prefix + '/progress')
+        assert after_return['missing'] == [41]
+        assert after_return['retired'] == ['A-P1']
+        assert [event['ejection_id'] for event in after_return['history']] == ['A-P1', 'A-P2', 'A-P3']
+        assert [event['ejection_id'] for event in after_return['actual']] == ['A-P2', 'A-P3']
+
+        # Reprint on the same run: still missing after front, then A-P4 on real ejection.
+        request_json(addresses['A'], f"/runs/{ref['run_id']}/advance", {'request_id': 'reprint-front'})
+        partial = request_json(desk, prefix + '/progress')
+        assert partial['missing'] == [41], partial
+        for stage in ('back', 'eject'):
+            request_json(addresses['A'], f"/runs/{ref['run_id']}/advance",
+                         {'request_id': f'reprint-{stage}'})
+        completed = request_json(desk, prefix + '/progress')
+        assert completed['missing'] == []
+        assert [event['ejection_id'] for event in completed['actual']] == ['A-P4', 'A-P2', 'A-P3']
+        run_read = request_json(addresses['A'], f"/runs/{ref['run_id']}")
+        assert [event['ejection_id'] for event in run_read['actual']] == [
+            'A-P1', 'A-P4', 'A-P2', 'A-P3']
+        assert run_read['retired'] == ['A-P1']
+
+        # The reprint's own measurement is the one accepted.
+        final_measurements = [{'ejection_id': event['ejection_id'],
+                               'deviation_mm': deviations[str(event['number'])]}
+                              for event in completed['actual']]
+        issued = request_json(desk, prefix + '/inspection', {'measurements': final_measurements})
         delivery = request_json(desk, prefix + '/delivery')
         assert issued == delivery
         rows = delivery['sheets']
         assert [row['print_number'] for row in rows] == ['041', '042', '043']
         assert [row['deviation_mm'] for row in rows] == [0, -2, 2]
-        assert [row['ejection_id'] for row in rows] == [event['ejection_id'] for event in actual]
-        print(json.dumps({'sample': sample['draft']['draft_id'], 'back_proof': revision['back_print'],
-                          'progress': progress, 'delivery': delivery}, ensure_ascii=False, sort_keys=True))
+        assert [row['ejection_id'] for row in rows] == ['A-P4', 'A-P2', 'A-P3']
+
+        print(json.dumps({
+            'sample': sample['draft']['draft_id'],
+            'back_proof': revision['back_print'],
+            'progress': progress,
+            'returned': returned,
+            'return_progress': after_return,
+            'reprint_partial_progress': partial,
+            'reprint_progress': completed,
+            'reprint_run': run_read,
+            'delivery': delivery,
+        }, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == '__main__':

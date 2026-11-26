@@ -24,18 +24,19 @@ python3 -B -m desk.http --db desk.sqlite --template samples/festival.json --pres
 | `POST /batches` | `revision_id`、`start`、`count`。成功 201，返回 `batch_id` 与完整 `plan`。 |
 | `GET /batches/{id}` | 开批快照、指定印机和已知的原运行号。 |
 | `POST /batches/{id}/dispatch` | `press_id`、`request_id`。成功 200，返回 `batch_id`、`press_id`、`run_id`。派发请求号在印务台内使用。 |
-| `GET /batches/{id}/progress` | 固定批、原印机和运行号，以及 `actual` 实吐列表和 `missing` 印号列表。未派发批的印机与运行号为空。已绑定待确认时只有印机号。 |
+| `GET /batches/{id}/progress` | 固定批、原印机和运行号，以及 `actual` 实吐列表和 `missing` 印号列表。未派发批的印机与运行号为空。已绑定待确认时只有印机号。发生退役后另附 `history` 与 `retired`。 |
 | `POST /batches/{id}/inspection` | `measurements` 数组，每项为 `ejection_id` 和 `deviation_mm`。成功 200，返回固定交付清单。以相同证据重复验收得到原清单。 |
+| `POST /batches/{id}/scrap` | `request_id`、`ejection_id`、`deviation_mm`。确认交回超差原纸并退役，成功 200 返回 `request_id`、`batch_id`、`press_id`、`run_id`、整数 `number` 及退役的 `ejection_id`。同一申请号重投复领第一次成功回执。 |
 | `GET /batches/{id}/delivery` | 按原批号领取第一次验收的清单，包含 `delivery_id`、`revision_id` 及原编号升序的纸张明细。 |
 
 矩形字段为 `x,y,w,h`。纸规字段为 `width,height,margins`，边距按左、上、右、下排列。纸宽、高、矩形宽、高为正整数，坐标与边距为非负整数。翻边为 `long` 或 `short`。长边取长边所在方向为轴，正方形用纵轴作为长边。纵轴用 `width-x-w`，横轴用 `height-y-h`。完整矩形的四边都须在许可纸面内，允许贴边。印号可取 1 至 999999，单批 1 至 500 张，末号不得越界。所有数字均使用 JSON 整数。印号文本三位起补零。印机号和请求号最长 80 字符，使用字母、数字、点、下划线和连字符。
 
 ## 印机 HTTP
 
-`POST /runs/{id}/advance` 输入 `request_id`。返回 `action_id`、`number`、`stage`、本次 `ejection_id` 及 `actual` 实吐快照。同一印机内请求号绑定到原运行。每次新推进选择可用印号中最靠前的一张，按 `front`、`back`、`ejected` 逐步执行。同张还有未确认动作时可推进别张。失答可按同一个请求号重投。`GET /runs/{id}` 回读这个运行的实吐事实。
+`POST /runs/{id}/advance` 输入 `request_id`。返回 `action_id`、`number`、`stage`、本次 `ejection_id` 及 `actual` 实吐快照。同一印机内请求号绑定到原运行。每次新推进选择可用印号中最靠前的一张，按 `front`、`back`、`ejected` 逐步执行。同张还有未确认动作时可推进别张。失答可按同一个请求号重投。`GET /runs/{id}` 回读这个运行的实吐事实；发生退役后另带 `retired` 列出退役出纸号。`POST /runs/{id}/retire` 输入 `request_id`、`ejection_id`，由印务台在确认交回后调用，退役该实吐并把该印号放回待印，供同运行补印。
 
 印务台通过 `POST /queue` 传送 `batch_id`、目标 `press_id` 与 `plan`。这是本地服务之间的入队接口。原批及相同快照在同一台印机重投时返回原运行号。运行库和设备库是各自提交的 SQLite 库。设备在吐纸动作上记账，印机服务再保存本次推进结果。读进度、查原运行和领取都不调用设备执行入口。
 
 ## 错误与恢复
 
-错误响应为 `{"error":"错误标识"}`。未知对象为 404。无效几何、号段和超差为 422。改机、请求身份冲突、无法推进和证据覆盖不齐为 409。领取的 `incomplete` 表示缺纸，`not_inspected` 表示实吐齐备等待质检。实际出纸号需要与测量一一对应，等量的外来出纸号不能替代原批实物。正负偏差的绝对值与原定稿公差比较，等额可以签出。传输失答或设备暂未完成可以返回 503，待恢复后使用原请求号继续。已签出时可直接领取，无需原机在线。
+错误响应为 `{"error":"错误标识"}`。未知对象为 404。无效几何、号段、偏差类型或未超公差为 422。改机、请求身份冲突、无法推进、证据覆盖不齐、原纸与批不符、原纸已签出或已退役为 409。领取的 `incomplete` 表示缺纸，`not_inspected` 表示实吐齐备等待质检。实际出纸号需要与测量一一对应，等量的外来出纸号不能替代原批实物。正负偏差的绝对值与原定稿公差比较，等额可以签出。传输失答或设备暂未完成可以返回 503，待恢复后使用原请求号继续。已签出时可直接领取，无需原机在线。同一张纸的报废与签出只能成功一项。
